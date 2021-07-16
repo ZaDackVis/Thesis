@@ -1,0 +1,1726 @@
+---
+title: "Community Ecology of Mountain Systems in Southwestern Yukon"
+author: "Zachary Davis, C. Lisa Mahon, Erin Bayne, Juan Andres 2051"
+date: "2/18/2021"
+output: word_document
+---
+
+
+The Objectives of this Thesis will be to
+ - Identify communities which form along gradients in the Yukon
+ - Identify habitat associations for individual species
+ - Identify the environmental gradients driving diversity patterns.
+ 
+
+######Start here:
+```{r message = FALSE Libraries and Working Directory}
+library(vegan)
+library(vegan3d)
+library(ggplot2)
+library(tidyverse)
+library(ggordiplots)
+library(mvpart)
+library(psych)
+library(gdm)
+setwd("C:/Users/DackZ/Documents/R/Yukon_Birds/0_Data/")
+
+```
+
+######SPECIES DATA
+
+```{r create datasets of both ARU and HO observations, and merge them to create an omnibus dataset}
+
+#read in ARU data
+
+ARU <- read.csv("C:/Users/DackZ/Documents/R/Yukon_Birds/0_Data/WF_ARU_PC.csv")
+ARU <- column_to_rownames(ARU, "X") 
+
+#Common loon was detected, but no water on the mountains, must be from the lakes in valleys. These shouldn't be included.
+
+ARU$COLO <- NULL
+
+#read in human observer data.
+
+HO <- read.csv("C:/Users/DackZ/Documents/R/Yukon_Birds/0_Data/WF_HO_PC.csv")
+HO <- column_to_rownames(HO, "X")
+
+#for some reason "Officials" changed the name to canada jay.
+
+names(HO)[names(HO) %in% "GRAJ"] <- "CAJA"
+
+#compile a list of species observed by humans.
+
+HOspec <- HO[,!names(HO) %in% c("location","site","zone","stat_num","Site_Zone")]
+
+#subset that list so it's just a list of passerines 
+
+HOpass <- HOspec[,!names(HOspec) %in% c("AMDI",
+                                        "AMWI",
+                                        "BARS",
+                                        "CLSW",
+                                        "DUGR",
+                                        "GHOW",                              
+                                        "LESC",
+                                        "LEYE",
+                                        "MEGU",
+                                        "NOFL",
+                                        "ROPT",
+                                        "RTHA",
+                                        "RUGR",
+                                        "SEOW",
+                                        "SEPL",
+                                        "SPGR",
+                                        "TTWO",
+                                        "VGSW",
+                                        "WIPT",
+                                        "WISN")]
+#compile a list of ARU detected species.
+ARUspec <- ARU[,-c(61:65)]
+
+#subset that list so it is just passerines
+ARUpass <- ARUspec[,!names(ARUspec) %in% c("DUGR",
+                                           "GHOW",
+                                    "LEYE",
+                                    "MEGU",
+                                    "SEPL",
+                                    "SOGR",
+                                    "SPGR",
+                                    "WTPT",
+                                    "WISN",
+                                    "WIPT",
+                                    "ROPT")]
+                                    
+#create two vectors of those species' names
+ARUP <- names(ARUspec)
+HOP <- names(HOspec)
+
+ARUUniqueSpec <- setdiff(ARUP, HOP)
+
+HOUniqueSpec <- setdiff(HOP,ARUP)
+
+
+
+rm(ARUP)
+rm(HOP)
+
+#add species that were only seen by HO to ARU dataset so that they are congruent (no observations  = 0)
+
+HOonly <- matrix(0, nrow = 628, ncol = length(HOUniqueSpec))
+HOonly <- as.data.frame(HOonly)
+colnames(HOonly) <- HOUniqueSpec
+
+ARU <- ARU %>% cbind(HOonly)
+
+
+#add species that were only seen by ARU to HO dataset so that they are congruent (no observations = 0)
+
+ARUonly <- matrix(0, nrow = nrow(HO), ncol = length(ARUUniqueSpec))
+ARUonly <- as.data.frame(ARUonly)
+colnames(ARUonly) <- ARUUniqueSpec
+
+HO <- HO %>% cbind(ARUonly)
+
+
+rm(ARUUniqueSpec)
+rm(HOUniqueSpec)
+
+#add a variable for observation method.
+
+ARU$Method <- "ARU"
+HO$Method <- "HO"
+
+#merge the datasets
+allObs <- rbind(ARU, HO)
+
+#create a variable that is for the designated Site's bioclimate zone, and the method used to observe there.
+
+allObs$szMethod <- paste(allObs$Site_Zone,'.',allObs$Method)
+
+#meta data for the observations.
+meta <- allObs[names(allObs) %in% c("Site_Zone","location","site","zone","stat_num","Method","szMethod")]
+
+#I need a dataframe of just the observations.
+allObs <- allObs[!names(allObs) %in% names(meta)]
+
+#Make a dataframe of all passerines observed, regardless of method.
+passerines <- allObs[names(allObs) %in% names(ARUpass) | names(allObs) %in% names(HOpass)]
+
+#reorder the passerine dataframe.
+order <- order(names(passerines))
+
+passerines <- passerines[,order]
+
+rm(order)
+#recompile the metadata with the observation dataframe.
+allSpec <- allObs
+allSpec <- names(allSpec)
+allObs <- mutate(allObs,meta)
+
+#metadata should be a factor
+allObs[sapply(allObs, is.character)] <- lapply(allObs[sapply(allObs, is.character)], 
+                                       as.factor)
+
+
+ARU <- ARU[!names(ARU) %in% names(HOonly)]
+
+HO <- HO[!names(HO) %in% names(ARUonly)]
+
+rm(ARUonly)
+rm(HOonly)
+
+```
+
+```{r Does sample method have a significant effect on dissimilarities?}
+
+library(vegan)
+library(RVAideMemoire)
+
+szmethods <- allObs %>% 
+  group_by(allObs$szMethod) %>%   
+  summarise_at(names(passerines), sum, na.rm = FALSE)
+
+names(szmethods)[names(szmethods) ==  "allObs$szMethod"] <- "szmethod"
+
+szmethods <- separate(szmethods, col = "szmethod", sep = " . ", into = c("site_zone","method"), remove = FALSE) 
+
+szmethods <- separate(szmethods, col = "site_zone", sep = "_", into = c("site","zone"), remove = FALSE) 
+
+szmethods$zone_method <- paste(szmethods$zone, szmethods$method) 
+
+szmethods <- column_to_rownames(szmethods, "szmethod") 
+
+
+
+szmethdisPA<- vegdist(decostand(szmethods[names(passerines)], method = "pa"), method = "bray")
+
+szmethdisBC <- vegdist(szmethods[names(passerines)], method = "bray")
+
+szmethdisT <- vegdist(decostand(szmethods[names(passerines)], "hellinger"), method = "bray")
+
+
+PAzoneMethodPermanova <- pairwise.perm.manova(szmethdisPA, szmethods$zone_method)
+
+BCzoneMethodPermanova <- pairwise.perm.manova(szmethdisBC, szmethods$zone_method)
+
+HTzoneMethodPermanova <- pairwise.perm.manova(szmethdisT, szmethods$zone_method)
+
+bcMDS <- metaMDS(szmethdisBC, distance = "bray", k = 2)
+
+ordiplot(bcMDS)
+ordiellipse(bcMDS, groups = szmethods$zone_method)
+ordiellipse(bcMDS, groups = szmethods$zone, col = c("red","blue","green"))
+
+
+
+PAbetaDisp <- betadisper(szmethdisPA,group = szmethods$zone_method)
+BCbetaDisp <- betadisper(szmethdisBC,group = szmethods$zone_method)
+TbetaDisp <- betadisper(szmethdisT,group = szmethods$zone_method)
+```
+
+no.
+
+```{r Declutter}
+rm(bcMDS)
+rm(szmethdisPA)
+rm(szmethdisBC)
+rm(szmethdisT)
+rm(szmethods)
+rm(HO)
+rm(HOpass)
+rm(HOspec)
+rm(K_Env)
+rm(obs)
+rm(YK_Env)
+rm(ARUpass)
+```
+
+
+```{r Compile observations of passerines by Mountain And Zone (regardless of Method!)}
+
+allObs$nsamp <- 1
+passerines$nsamp <- 1
+
+szObs <- allObs %>% 
+  group_by(allObs$Site_Zone) %>% 
+  summarise_at(names(passerines), sum, na.rm = FALSE)
+
+
+names(szObs)[names(szObs)=="allObs$Site_Zone"] <- "Site_Zone"
+
+zone <- meta[,names(meta) %in% c("Site_Zone","zone")]
+zone <- unique(zone)
+
+
+szObs <- left_join(szObs, zone, by = "Site_Zone")
+
+szObs <- column_to_rownames(szObs, "Site_Zone")
+
+hist(szObs$nsamp)
+plot(szObs$nsamp, col = rainbow(3)[as.factor(szObs$zone)])
+
+szObs$nsamp <- NULL
+szObs$zone <- NULL
+
+
+
+```
+
+```{r Compile observations of passerines by point count location, regardless of method}
+
+locObs <- allObs %>% 
+  group_by(allObs$location) %>% 
+  summarise_at(names(passerines), sum, na.rm = FALSE)
+
+
+names(locObs)[names(locObs)=="allObs$location"] <- "location"
+
+locObs <- column_to_rownames(locObs, "location")
+
+#did method have a significant effect on dissimilarities?
+
+
+loc_dist <- vegdist(locObs[names(passerines)], method = "bray")
+
+
+
+```
+
+
+
+######Richness Modeling.
+```{r Does sample method have significant effect on richness?}
+
+passerines$nsamp <- 1
+
+szmethods <- allObs %>% 
+  group_by(allObs$szMethod) %>% 
+  summarise_at(names(passerines), sum, na.rm = FALSE)
+
+
+passerines$nsamp <- NULL
+
+names(szmethods)[names(szmethods) ==  "allObs$szMethod"] <- "szmethod"
+
+szmethods <- separate(szmethods, col = "szmethod", sep = " . ", into = c("site_zone","method"), remove = FALSE) 
+
+szmethods <- separate(szmethods, col = "site_zone", sep = "_", into = c("site","zone"), remove = FALSE) 
+
+szmethods$zone_method <- paste(szmethods$zone, szmethods$method) 
+
+szmethods <- column_to_rownames(szmethods, "szmethod") 
+
+
+
+#make a vector of number of samples
+nsamp <- szmethods$nsamp
+
+#convert to Pres/Abs
+pa <- decostand(szmethods[names(passerines)], method = "pa")
+
+
+
+pa$zone <- szmethods$zone
+pa$zone_method <- szmethods$zone_method
+pa$method <- szmethods$method
+pa$site <- szmethods$site
+
+#make a dataframe of richness values per location
+
+div <- as.data.frame(cbind(rowSums(pa[names(passerines)]), pa$zone,pa$method,pa$site, nsamp))
+
+names(div) <- c("richness","zone","method","site","nsamp")
+ 
+
+str(div)
+
+
+div$nsamp <- as.numeric(div$nsamp)
+div$richness <- as.numeric(div$richness)
+div$method <- as.factor(div$method)
+div$Site_Zone <- as.factor(div$Site_Zone)
+div$biogeo_zone <- as.factor(div$biogeo_zone)
+div$zone <- as.factor(div$zone)
+div$site <- as.factor(site)
+
+
+
+
+library("lme4")
+
+richness <- div$richness
+
+richness_method <- lm(richness~div$method, family = 'poisson')
+richness_method
+plot(richness_method)
+
+
+richGLMM_site <- glmer(richness~-1+offset(log(div$nsamp))+div$zone+(1|div$site), family = 'poisson')
+
+richGLMM_Env <- glmer(richness~-1+offset(log(div$nsamp))+div$zone+(1|div$site), family = 'poisson')
+
+
+richGLM <- glm(div$richness~-1+offset(log(div$nsamp))+div$zone, family = 'poisson')
+
+
+richGLMM_site
+richGLM
+
+AIC(richGLMM_site)
+AIC(richGLMM_Env)
+AIC(richGLM)
+
+```
+
+
+######Environmental Data
+```{r Read in Yukon Environment Dataset}
+
+
+YK_Env <- read.csv("C:/Users/DackZ/Documents/R/Yukon_Birds/0_Data/Yukon_Env.csv")
+
+
+YK_Env <- column_to_rownames(YK_Env, "location")
+
+```
+
+
+```{r Create an env dataset of Mean Mountain Zone}
+env <- YK_Env[names(YK_Env) %in% c("location", "Latitude","Longitude", "biogeo","Site_Zone","zone","elev", "Tmax_sm","PPT_sm","max_ndvi","cloud","eviDisp","habEnt","tpi","tri","aspect")]
+
+
+#take the mean for site_zones.
+
+szEnv <- env %>% group_by(env$Site_Zone) %>% 
+summarise_at(c("elev","Tmax_sm","PPT_sm","max_ndvi","Latitude","Longitude","cloud","eviDisp","habEnt","tpi","tri","aspect"),
+                          mean, 
+                          na.rm = FALSE, 
+                          keep = TRUE)
+
+
+names(szEnv)[names(szEnv)=="env$Site_Zone"] <- "site_zone"
+
+
+szEnv <- separate(szEnv, "site_zone", into = c("site","zone"), sep = "_", remove = FALSE)
+
+
+
+szEnv <- column_to_rownames(szEnv,"site_zone")
+
+
+
+biogeo <- as.data.frame(unique(cbind(YK_Env$biogeo,YK_Env$site)))
+names(biogeo) <- c("biogeo","site")
+
+
+site_zone <- rownames(szEnv)
+
+szEnv <- right_join(szEnv,biogeo, by = "site")
+
+rm(biogeo)
+
+szEnv$site_zone <- site_zone
+
+
+szEnv <- column_to_rownames(szEnv,"site_zone")
+
+pairs.panels(szEnv[names(szEnv) %in% c("elev","Tmax_sm","PPT_sm","max_ndvi","Latitude","Longitude","cloud","eviDisp","habEnt","tpi","tri","aspect")], stars = TRUE)
+
+szEnv$zone[szEnv$zone == "A"] <- "ALP"
+
+szEnv$zone[szEnv$zone == "B"] <- "BOR"
+
+szEnv$zone[szEnv$zone == "S"] <- "SUB"
+```
+
+```{r scale the Mean Env ARU  dataset}
+
+scaledEnv <- scale(szEnv[names(szEnv) %in% c("elev","Tmax_sm","PPT_sm","max_ndvi","Latitude","Longitude","cloud","eviDisp","habEnt","tpi","tri","aspect")], center = TRUE, scale = TRUE)
+
+scaledEnv <- as.data.frame(scaledEnv)
+
+scaledEnv <- mutate(scaledEnv, szEnv[!names(szEnv) %in% c("elev","Tmax_sm","PPT_sm","max_ndvi","Latitude","Longitude","cloud","eviDisp","habEnt","tpi","tri","aspect")])
+
+scaledEnv <- as.data.frame(scaledEnv)
+
+scaledEnv$biogeo_zone <- paste(scaledEnv$biogeo,'_',scaledEnv$zone)
+
+```
+
+```{r Create scaled env dataset of all ARU locations}
+
+locEnv <- env[names(env) %in% c("location", "Latitude","Longitude", "biogeo","site", "Site_Zone","zone","elev", "Tmax_sm","PPT_sm","max_ndvi","cloud","eviDisp","habEnt","tpi","tri","aspect")]
+
+
+locEnv <- locEnv[rownames(locEnv) %in% allObs$location,]
+
+locEnvScale <- scale(locEnv[names(locEnv) %in% c("elev","Tmax_sm","PPT_sm","max_ndvi","Latitude","Longitude","cloud","eviDisp","habEnt","tpi","tri","aspect")], center = TRUE, scale = TRUE)  
+
+locEnvScale <- as.data.frame(locEnvScale)
+
+locEnvScale <- mutate(locEnvScale, locEnv[!names(locEnv) %in% c("elev","Tmax_sm","PPT_sm","max_ndvi","Latitude","Longitude","cloud","eviDisp","habEnt","tpi","tri","aspect")])
+
+locEnvScale$biogeo_zone <- paste(locEnvScale$biogeo,'_',locEnvScale$zone)
+
+
+pairs.panels(locEnvScale[names(locEnvScale) %in% c("elev","Tmax_sm","PPT_sm","max_ndvi","Latitude","Longitude","cloud","eviDisp","habEnt","tpi","tri","aspect")], stars = TRUE)
+
+```
+
+```{r Parton Is an Outlier in terms of Precipitation. What do?}
+
+#parton is showing the reverse trend, and higher than regional average precip levels for all locations. Is it just wild????
+
+locenvMDS <- metaMDS(locEnvScale[names(locEnvScale) %in% c("Tmax_sm","PPT_sm")], k=2, distance = "euclidian")
+
+
+ordiplot(locenvMDS)
+
+```
+
+
+######iNEXT
+
+```{r ARU ONLY Incidence Based iNEXT ("Regional"))}
+
+library(iNEXT)
+
+#Subset by each zone
+Alpine_i <- subset(ARU, zone == 'A')  
+SubAlp_i <- subset(ARU, zone == 'S')
+Boreal_i <- subset(ARU, zone == 'B')
+
+
+#ONly need the spec matrix.
+Alpine_i <- Alpine_i[,names(Alpine_i) %in% names(ARUpass)]
+SubAlp_i <- SubAlp_i[,names(SubAlp_i) %in% names(ARUpass)]
+Boreal_i <- Boreal_i[,names(Boreal_i) %in% names(ARUpass)]
+
+Alpine_i[Alpine_i > 1] <- 1 #could have used decostand at this point but I didn't know vegan :)
+SubAlp_i[SubAlp_i > 1] <- 1
+Boreal_i[Boreal_i > 1] <- 1
+
+
+#iNEXT  requires a spec by site matrix (S x N')
+
+Alpine_i <- t(sapply(Alpine_i, as.numeric)) 
+Alpine_i <- as.data.frame(Alpine_i)
+
+SubAlp_i <- t(sapply(SubAlp_i, as.numeric))
+SubAlp_i <- as.data.frame(SubAlp_i)
+
+Boreal_i <- t(sapply(Boreal_i, as.numeric))
+Boreal_i <- as.data.frame(Boreal_i)
+
+
+incidence <- list(Alpine_i,SubAlp_i,Boreal_i)
+
+
+ 
+incidence <- lapply(incidence, as.incfreq)  
+#iNEXT built in function to transform the data in to a row-sum counts
+
+names(incidence) <- c("Alpine","Subalpine","Boreal")
+
+#run iNEXT
+
+inci_iNEXT  <- iNEXT(incidence, 
+                q = c(0, 1, 2), 
+                datatype = "incidence_freq",
+                nboot=100)
+
+info_inci <- inci_iNEXT$DataInfo
+
+
+names(info_inci) <- c("Zone", "Sample Size", "Observed Individuals", "Observed spec Richness","Sample completeness","f1","f2","f3","f4","F5","f6","f7","f8","f9","f10")
+
+info_inci
+
+
+inci_div <- inci_iNEXT$AsyEst
+
+names(inci_div) <- c("Zone", "Index", "Effective Species", "Hill Number at Sample Completeness", "S.E.", "LCI", "UCI")
+
+inci_div
+
+
+```
+
+```{r ARU ONLY Regional iNEXT graphs}
+
+ggiNEXT(inci_iNEXT, type=1, facet.var="site")
+
+#Orders of q displayed in seperate graphs, each Zone on own curve.
+ggiNEXT(inci_iNEXT, type=1, facet.var="order")
+
+#Coverage Curves
+ggiNEXT(inci_iNEXT, type=2, facet.var="none", color.var="site")
+
+#Sample coverage based R/E zone graphs, orders of q curves
+ggiNEXT(inci_iNEXT, type=3, facet.var="site")
+
+#Sample coverage based on R/E q graphs, zone curves.
+
+ggiNEXT(inci_iNEXT, type=3, facet.var="order", color.var="site")
+
+
+```
+
+```{r ARU ONLY Declutter}
+rm(Boreal_i)
+rm(Alpine_i)
+rm(SubAlp_i)
+rm(inci_iNEXT)
+rm(inci_div)
+rm(info_inci)
+rm(incidence)
+```
+
+```{r ARU ONLY Incidence based iNEXT ("Mountain")}
+
+n <- 1
+
+i <- unique(allObs$site)
+
+allSites <- as.list(as.numeric(unique(allObs$site)))
+
+for(n in 1:length(i)){
+  site <- paste(i[n])
+  site <- subset(allObs[names(passerines)], allObs$site == paste(i[n]))
+  site <- decostand(site, method = "pa")
+  site <- t(site)
+  site <- as.incfreq(site)
+  out <- site
+  allSites[[n]] <- out
+  rm(out)
+  n <- n+1
+  } 
+
+names(allSites) <- i
+
+
+allSites_iNEXT  <- iNEXT(allSites, 
+                q = c(0, 1, 2), 
+                datatype = "incidence_freq",
+                nboot=100)
+
+
+
+allSites_info <- allSites_iNEXT$DataInfo
+
+
+
+
+names(allSites_info) <- c("site", "Sample Size"," incidences","O.spec Richness", "Sample Completeness","Q1","Q2","Q3","Q4","Q5","Q6","Q7","Q8","Q9","Q10")
+
+allSites_info
+allSites_div <- allSites_iNEXT$AsyEst
+
+print(allSites_div)
+
+
+```
+
+```{r ARU ONLY "Mountain" iNEXT graphs}
+
+ggiNEXT(allSites_iNEXT, type=1, facet.var="site")
+
+#Orders of q displayed in seperate graphs, each Zone on own curve.
+ggiNEXT(allSites_iNEXT, type=1, facet.var="order")
+
+#Coverage Curves
+ggiNEXT(allSites_iNEXT, type=2, facet.var="none", color.var="site")
+
+#Sample coverage based R/E zone graphs, orders of q curves
+ggiNEXT(allSites_iNEXT, type=3, facet.var="site")
+
+#Sample coverage based on R/E q graphs, zone curves.
+
+ggiNEXT(allSites_iNEXT, type=3, facet.var="order", color.var="site")
+
+
+```
+
+```{r ARU ONLY Declutter}
+rm(allSites_iNEXT)
+rm(allSites_div)
+rm(allSites_info)
+rm(n)
+rm(i)
+rm(allSites)
+rm(site_zone)
+rm(site)
+```
+
+```{r ARU ONLY Incidence Based iNEXT ("Local")}
+library(iNEXT)
+
+n <- 1
+
+i <- unique(allObs$Site_Zone)
+
+allSiteZones <- as.list(as.numeric(unique(allObs$Site_Zone)))
+
+for(n in 1:length(i)){
+  site <- paste(i[n])
+  site <- subset(allObs[names(passerines)], allObs$Site_Zone == paste(i[n]))
+  site <- as.data.frame(decostand(site, method = "pa"))
+  site <- t(site)
+  site <- as.incfreq(site)
+  out <- site
+  allSiteZones[[n]] <- out
+  rm(out)
+  n <- n+1
+  } 
+
+names(allSiteZones) <- i
+
+
+allSiteZones_iNEXT  <- iNEXT(allSiteZones, 
+                q = c(0, 1, 2), 
+                datatype = "incidence_freq",
+                nboot=100)
+
+
+
+allSiteZones_info <- allSiteZones_iNEXT$DataInfo
+
+
+
+
+names(allSiteZones_info) <- c("site", "Sample Size"," incidences","O.spec Richness", "Sample Completeness","Q1","Q2","Q3","Q4","Q5","Q6","Q7","Q8","Q9","Q10")
+
+allSiteZones_info
+
+allSiteZones_div <- allSiteZones_iNEXT$AsyEst
+
+allSiteZones_div$S.C. <- allSiteZones_info$`Sample Completeness`
+
+allSiteZones_div
+
+allSiteZones_info
+Site_Zones_iNEXT_info
+```
+
+
+
+```{r BOTH COMBINE Site_Zone by method iNEXT}
+library(iNEXT)
+
+n <- 1
+
+i <- unique(allObs$szMethod)
+
+szMethods <- as.list(as.numeric(unique(allObs$szMethod)))
+
+for(n in 1:length(i)){
+  site <- paste(i[n])
+  site <- subset(allObs[names(passerines)], allObs$szMethod == paste(i[n]))
+  site <- as.data.frame(decostand(site, method = "pa"))
+  site <- t(site)
+  site <- as.incfreq(site)
+  out <- site
+  szMethods[[n]] <- out
+  rm(out)
+  n <- n+1
+  } 
+
+names(szMethods) <- i
+
+
+szMethods_iNEXT  <- iNEXT(szMethods, 
+                q = c(0, 1, 2), 
+                datatype = "incidence_freq",
+                nboot=100)
+
+
+
+szMethods_info <- szMethods_iNEXT$DataInfo
+
+
+
+
+names(szMethods_info) <- c("site", "Sample Size"," incidences","O.spec Richness", "Sample Completeness","Q1","Q2","Q3","Q4","Q5","Q6","Q7","Q8","Q9","Q10")
+
+szMethods_info
+
+allSiteZones_div <- allSiteZones_iNEXT$AsyEst
+
+allSiteZones_div$S.C. <- allSiteZones_info$`Sample Completeness`
+
+allSiteZones_div
+```
+
+
+```{r BOTH COMBINE Site_Zone, regardless of method}
+
+library(iNEXT)
+
+n <- 1
+
+i <- unique(allObs$Site_Zone)
+
+Site_Zones <- as.list(as.numeric(unique(allObs$Site_Zone)))
+
+for(n in 1:length(i)){
+  site <- paste(i[n])
+  site <- subset(allObs[names(passerines)], allObs$Site_Zone == paste(i[n]))
+  site <- as.data.frame(decostand(site, method = "pa"))
+  site <- t(site)
+  site <- as.incfreq(site)
+  out <- site
+  Site_Zones[[n]] <- out
+  rm(out)
+  n <- n+1
+  } 
+
+names(Site_Zones) <- i
+
+
+Site_Zones_iNEXT  <- iNEXT(Site_Zones, 
+                q = c(0, 1, 2), 
+                datatype = "incidence_freq",
+                nboot=100)
+
+
+Site_Zones_iNEXT
+
+Site_Zones_iNEXT_info <- Site_Zones_iNEXT$DataInfo
+
+
+
+
+names(Site_Zones_iNEXT_info) <- c("site", "Sample Size"," incidences","O.spec Richness", "Sample Completeness","Q1","Q2","Q3","Q4","Q5","Q6","Q7","Q8","Q9","Q10")
+
+Site_Zones_iNEXT_info
+
+Site_Zones_div <- Site_Zones_iNEXT$AsyEst
+
+Site_Zones_div$S.C. <- Site_Zones_div$`Sample Completeness`
+
+Site_Zones_div
+
+
+
+summary(Sites_info[2:4])
+```
+
+
+```{r BOTH OBSERAVTION METHODS Incidence Based @ Mountain Level}
+
+library(iNEXT)
+
+n <- 1
+
+i <- unique(allObs$site)
+
+Sites <- as.list(as.numeric(unique(allObs$site)))
+
+for(n in 1:length(i)){
+  site <- paste(i[n])
+  site <- subset(allObs[names(passerines)], allObs$site == paste(i[n]))
+  site <- as.data.frame(decostand(site, method = "pa"))
+  site <- t(site)
+  site <- as.incfreq(site)
+  out <- site
+  Sites[[n]] <- out
+  rm(out)
+  n <- n+1
+  } 
+
+names(Sites) <- i
+
+
+Sites_iNEXT  <- iNEXT(Sites, 
+                q = c(0, 1, 2), 
+                datatype = "incidence_freq",
+                nboot=100)
+
+
+Sites_iNEXT
+Sites_info <- Sites_iNEXT$DataInfo
+
+
+
+
+names(Sites_info) <- c("site", "Sample Size"," incidences","O.spec Richness", "Sample Completeness","Q1","Q2","Q3","Q4","Q5","Q6","Q7","Q8","Q9","Q10")
+
+Sites_info
+
+Sites_Div <-Sites_iNEXT$AsyEst
+
+Sites_Div
+
+summary(Sites_info)
+
+```
+
+```{r BOTH OBSERVATIONS METHODS Incidence Based @ Bioclimate zone}
+library(iNEXT)
+
+n <- 1
+
+i <- unique(allObs$zone)
+
+biozone <- as.list(as.numeric(unique(allObs$zone)))
+
+for(n in 1:length(i)){
+  site <- paste(i[n])
+  site <- subset(allObs[names(passerines)], allObs$zone == paste(i[n]))
+  site <- as.data.frame(decostand(site, method = "pa"))
+  site <- t(site)
+  site <- as.incfreq(site)
+  out <- site
+  biozone[[n]] <- out
+  rm(out)
+  n <- n+1
+  } 
+
+names(biozone) <- i
+
+
+biozone_iNEXT  <- iNEXT(biozone, 
+                q = c(0, 1, 2), 
+                datatype = "incidence_freq",
+                nboot=100, conf = .84)
+
+
+biozone_iNEXT
+
+biozone_info <- biozone_iNEXT$DataInfo
+
+
+
+
+names(biozone_info) <- c("site", "Sample Size"," incidences","O.spec Richness", "Sample Completeness","Q1","Q2","Q3","Q4","Q5","Q6","Q7","Q8","Q9","Q10")
+
+biozone_info
+
+zoneDiv <- biozone_iNEXT$AsyEst
+
+zoneDiv
+
+
+print(biozone_info)
+
+
+
+
+
+
+ggiNEXT(biozone_iNEXT, type=1, facet.var="site")
+
+#Orders of q displayed in seperate graphs, each Zone on own curve.
+ggiNEXT(biozone_iNEXT, type=1, facet.var="order")
+
+#Coverage Curves
+ggiNEXT(biozone_iNEXT, type=2, facet.var="none", color.var="site")
+
+#Sample coverage based R/E zone graphs, orders of q curves
+ggiNEXT(biozone_iNEXT, type=3, facet.var="site")
+
+#Sample coverage based on R/E q graphs, zone curves.
+
+ggiNEXT(biozone_iNEXT, type=3, facet.var="order", color.var="site")
+
+
+richness <- zoneDiv[zoneDiv$Diversity == "Species richness",]
+Shannon <- zoneDiv[zoneDiv$Diversity == "Shannon diversity",]
+Simpson <- zoneDiv[zoneDiv$Diversity == "Simpson diversity",]
+
+
+richness
+Shannon
+Simpson
+
+```
+
+
+```{r BOTH COMBINE DECLUTTER}
+rm(Sites_Zones_div)
+rm(Site_Zones)
+rm(Site_Zones_div)
+rm(Site_Zones_iNEXT)
+rm(Site_Zones_iNEXT_info)
+rm(Sites_Div)
+rm(Sites_iNext)
+rm(Sites_info)
+rm(i)
+rm(n)
+rm(order)
+rm(site)
+rm(site_zone)
+rm(zone)
+rm(zoneDiv)
+rm(Sites_iNEXT)
+rm(sites)
+rm(biozone_iNEXT)
+rm(biozone_info)
+rm(biozone)
+```
+######Calculate Dissimilarity Matrices
+
+```{r Site_Zone Bray-Curtis}
+
+# First step is to calculate dissimilarity matrices for each level of analysis.
+
+
+dist <- vegdist(szObs[names(passerines)],  method = "bray")
+
+
+
+```
+
+```{r Location Specific Bray-Curtis}
+
+loc_dist <- vegdist(locObs[names(passerines)], method = "bray")
+```
+
+```{r Site_Zone Sorenson}
+paszObs <- decostand(szObs[names(passerines)],  method = "pa")
+
+paDist <- vegdist(paszObs, method = "bray")
+
+```
+
+
+
+######NMDS 
+
+```{r How many dimensions for Regional ordination?}
+# In this part, we define a function NMDS.scree() that automatically 
+# performs a NMDS for 1-10 dimensions and plots the nr of dimensions vs the stress
+
+NMDS.scree <- function(x) { #where x is the name of the data frame variable
+  plot(rep(1, 10), replicate(10, metaMDS(x, autotransform = F, k = 1)$stress), xlim = c(1, 10),ylim = c(0, 0.60), xlab = "# of Dimensions", ylab = "Stress", main = "NMDS stress plot")
+  for (i in 1:10) {
+    points(rep(i + 1,10),replicate(10, metaMDS(x, autotransform = F, k = i + 1)$stress))
+  }
+}
+
+# Use the function that we just defined to choose the optimal # of dimensions
+NMDS.scree(dist)
+
+
+```
+
+```{r How many Dimensions for Sample Specific Ordination?}
+NMDS.scree(loc_dist)
+```
+
+```{r Declutter}
+rm(NMDS.scree)
+```
+
+```{r Great Site_Zone NMDS Ordination PA}
+
+#MDS code
+paszObs <- decostand(szObs[names(passerines)],  method = "pa")
+
+
+paMDS <- metaMDS(paszObs, "bray",k = 3, autotransform = FALSE)
+
+#stressplot
+stressplot(paMDS)
+
+
+#color vector
+cols <- c("red","green","blue")
+
+
+#fit environment
+fit <- envfit(paMDS,
+              env = scaledEnv[names(scaledEnv)%in%c("elev","Tmax_sm","PPT_sm","max_ndvi","Latitude","Longitude","cloud","eviDisp","habEnt","tpi","tri")])
+
+
+#plot
+ordiplot(paMDS, display = c("sites"), type = "p", ylim = c(-1,1), cex = 1) 
+
+##Elipsoid hull
+ordiellipse(paMDS,
+                groups = scaledEnv$zone,
+                label = FALSE,
+                 lwd=1, draw = "polygon",
+                 col = cols)
+
+#SD of centroid
+ordiellipse(paMDS,
+              groups = scaledEnv$zone,
+              label = FALSE,
+              lwd=1,
+              col = cols,
+            conf = .95)
+
+ordispider(paMDS, groups = scaledEnv$zone, col = cols, label = TRUE)
+
+
+#stressplot
+stressplot(paMDS)
+
+```
+
+```{r PA Site_Zone NMDS Ordination with fit vectors}
+
+
+#fit environment
+fit <- envfit(paMDS,
+              env = scaledEnv[names(scaledEnv)%in%c("elev","Tmax_sm","PPT_sm","max_ndvi","Latitude","cloud","eviDisp","habEnt","tpi","tri")])
+
+ordiplot(paMDS, display = c("sites"), type = "p", ylim = c(-1.5,1.5))
+
+#add envi fit
+plot(fit, add = TRUE)
+
+```
+```{r Great Site_Zone NMDS Ordination Bray-CUrtis}
+
+
+
+mds <- metaMDS(szObs[names(passerines)], "bray",k = 3, autotransform = FALSE)
+
+#stressplot
+stressplot(mds)
+
+
+#color vector
+cols <- c("red","green","blue")
+
+
+#fit environment
+fit <- envfit(mds,
+              env = scaledEnv[names(scaledEnv)%in%c("elev","Tmax_sm","PPT_sm","max_ndvi","Latitude","Longitude","cloud","eviDisp","habEnt","tpi","tri")])
+
+
+#plot
+ordiplot(mds, display = c("sites"), choices = c(1:2), type = "p", ylim = c(-1.5,1.5), cex = 1, main = "Bray-Curtis Dissimilarities") 
+
+#95% SE of centroid
+ordiellipse(mds,
+             groups = scaledEnv$zone,
+              label = FALSE,
+              lwd=1, kind = "se",
+              col = cols,
+            conf = .99, draw = "polygon")
+
+ordispider(mds, groups = scaledEnv$zone, col = cols, label = FALSE)
+
+
+```
+
+```{r Bray-Curtis Site_Zone NMDS Ordination with fit vectors}
+
+
+#fit environment
+fit <- envfit(mds,
+              env = scaledEnv[names(scaledEnv)%in%c("elev","Tmax_sm","PPT_sm","max_ndvi","Latitude","cloud","eviDisp","habEnt","tpi","tri")])
+
+ordiplot(mds, display = c("sites"), type = "p", ylim = c(-1.5,1.5))
+
+#add envi fit
+plot(fit, add = TRUE)
+
+```
+
+
+
+
+```{r PERMANOVA, BETADISPER, and TUKEY T Analyses}
+library(RVAideMemoire)
+library(borealis)
+
+
+dist <- vegdist(szObs[names(passerines)], method = "bray")
+
+
+bd <- betadisper(dist, group = szObs$zone, type = "median",bias.adjust = TRUE)
+
+bd
+
+tuk <- TukeyHSD(bd)
+
+tuk
+
+plot(tuk)
+
+permanova <- adonis(dist~zone, data = scaledEnv
+         , by = "term")
+
+zonemoanova
+
+
+permanova
+
+
+adonis.aic(permanova)
+
+permanova
+
+perm <- pairwise.perm.manova(dist, scaledEnv$zone, p.method = "bonferroni")
+
+perm$p.value
+
+permanova
+```
+
+```{r Presence Absence Location specific NMDS (it's a cluster)}
+
+locPA <- decostand(locObs[names(passerines)], method = "pa")
+  
+  
+locMDS <- metaMDS(locPA, k = 3, "bray", autotransform = FALSE)
+
+
+ordiplot(locMDS, display = c("sites"), type = "p", ylim = c(-1.5,1.5))
+
+#Elipsoid hull
+#orglellipse(locMDS,
+ #               groups = locEnvScale$biogeo,
+  #               label = FALSE,
+   #              lwd=1, 
+    #             col = cols, draw = "polygon")
+
+##standard error of centroid
+ordiellipse(locMDS,
+              groups = locEnvScale$biogeo_zone,
+              label = FALSE,
+              lwd=1,
+              col = cols, 
+            kind = "sd", conf = .95,
+            draw = "polygon")
+
+ordispider(locMDS, groups = locEnvScale$zone, col = cols, label = TRUE)
+
+
+
+
+
+
+
+```
+
+```{r Declutter}
+
+rm(locMDS)
+rm(mds2)
+rm(fit)
+
+```
+
+
+######dbRDA
+
+```{r Site_Zone Bray dbRDA }
+
+cols <- c("red","green","blue")
+
+
+szdbrda <- dbrda(dist~elev,data = scaledEnv, distance = "bray")
+
+szdbrda
+
+ordiplot(szdbrda, type = "t",xlim =c(-2,2), ylim = c(-2.5,2.5))
+ordiellipse(szdbrda, groups = scaledEnv$zone, kind = "sd", conf = .95, col = cols, label = TRUE)
+ordiellipse(szdbrda, groups = scaledEnv$zone, col = cols, kind = "ehull", draw = "polygon", label = TRUE)
+
+ordispider(szdbrda, groups=scaledEnv$biogeo_zone, lwd = 2, label = FALSE)
+
+
+
+#ordisurf(x = szdbrda, y = ARU_env$Latitude, knots = 2, add = TRUE)
+#ordisurf(x = szdbrda, y = ARU_env$PPT_sm, col = c("blue"), add = TRUE,knots = 2)
+#ordisurf(x = szdbrda, y = ARU_env$Tmax_sm, col = c("black"), add = TRUE,knots = 2)
+#ordisurf(x = szdbrda, y = ARU_env$habEnt, col = c("green"), add = TRUE,knots = 2)
+#ordisurf(x = szdbrda, y = ARU_env$eviDisp, col = c("orange"), add = TRUE,knots = 2)
+
+```
+
+```{r Site_Zone PERMANOVA} 
+
+szPERMANOVA <- adonis(dist~Tmax_sm+PPT_sm+max_ndvi+tpi+tri+habEnt+eviDisp+Latitude, by = "term")
+
+szPERMANOVA
+
+```
+
+```{r pa Site_Zone dbRDA}
+cols <- c("red","green","blue")
+
+
+padbrda <- dbrda(paDist~Tmax_sm+PPT_sm+max_ndvi+tpi+tri+habEnt+eviDisp+Latitude,data = scaledEnv, distance = "bray")
+
+
+ordiplot(padbrda, type = "p",xlim =c(-2,2), ylim = c(-2.5,2.5))
+ordiellipse(padbrda, groups = scaledEnv$zone, kind = "sd", conf = .95, col = cols, label = TRUE)
+ordiellipse(padbrda, groups = scaledEnv$zone, col = cols, kind = "ehull", draw = "polygon")
+ordispider(padbrda, groups=scaledEnv$biogeo_zone, lwd = 2, label = FALSE)
+
+
+```
+
+```{r Plot both to compare to eachother. }
+ordiplot(szdbrda, type = "p",xlim =c(-2,2), ylim = c(-2.5,2.5), main = "Bray-Curtis")
+ordiellipse(szdbrda, groups = scaledEnv$zone, kind = "sd", conf = .95, col = cols, label = FALSE)
+ordiellipse(szdbrda, groups = scaledEnv$zone, col = cols, kind = "ehull", draw = "polygon", label = FALSE)
+
+ordispider(szdbrda, groups=scaledEnv$biogeo_zone, lwd = 2, label = FALSE)
+
+
+
+ordiplot(padbrda, type = "p",xlim =c(-2,2), ylim = c(-2.5,2.5), main = "PA")
+ordiellipse(padbrda, groups = scaledEnv$zone, kind = "sd", conf = .95, col = cols, label = FALSE)
+ordiellipse(padbrda, groups = scaledEnv$zone, col = cols, kind = "ehull", draw = "polygon")
+ordispider(padbrda, groups=scaledEnv$biogeo_zone, lwd = 2, label = FALSE)
+
+```
+
+```{r Declutter}
+
+rm(szdbrda)
+rm(szPERMANOVA)
+rm(padbrda)
+rm(cols)
+rm(dist)
+rm(envfit)
+rm(loc_dist)
+rm(paDist)
+
+```
+
+######Paritioning  β-Diversity
+
+```{r Pairwise Site Dissimilarities (incidence based)}
+
+library(betapart)
+
+passerines$nsamp <- NULL
+
+sites <- allObs %>%
+  group_by(allObs$site) %>% 
+  summarise_at(names(passerines), sum, na.rm = FALSE)
+
+
+names(sites)[names(sites) == "allObs$site"] <- "site"
+
+sites <- column_to_rownames(sites, "site")
+
+sites <- decostand(sites[names(passerines)], method = "pa")
+
+betaCoreSites<- betapart.core(sites)
+
+betaSites <- beta.pair(betaCoreSites)
+
+betamultisites <- beta.multi(x = sites)
+betamultisites
+
+betaSites
+
+```
+
+```{r Abundance Based Permutational Dissimilarities (bootstrapped CI of paritions)}
+
+library(betapart)
+
+szObs$zone <- scaledEnv$zone
+
+alpine <- szObs[szObs$zone == "A",]
+alpine$zone <- NULL 
+
+
+boreal <- szObs[szObs$zone == "B",]
+boreal$zone <- NULL
+
+subalpine <- szObs[szObs$zone == "S",]
+subalpine$zone <- NULL
+
+alpBetaAbund <- beta.multi.abund(alpine)
+alpBetaPA <- beta.multi(decostand(alpine, method = "pa"))
+
+subalpineBetaAbund <- beta.multi.abund(subalpine)
+subalpineBetaPA <- beta.multi(decostand(subalpine, method = "pa"))
+
+borealBetaAbund<- beta.multi.abund(boreal)
+borealBetaPA <- beta.multi(decostand(boreal, method = "pa"))
+
+alpresamp <- beta.sample.abund(alpine, index.family = "bray", sites = 6, samples = 999)
+borealresamp <- beta.sample.abund(boreal, index.family = "bray", sites = 6, samples = 999)
+subalpinesamp <-  beta.sample.abund(subalpine, index.family = "bray", sites = 6, samples = 999)
+
+
+alpPAresamp <-  beta.sample(decostand(alpine,method = "pa"), index.family = "sorensen", sites = 6, samples = 999)
+
+borealPAresamp <-  beta.sample(decostand(boreal,method = "pa"), index.family = "sorensen", sites = 6, samples = 999)
+
+subalpPAresamp <-  beta.sample(decostand(subalpine,method = "pa"), index.family = "sorensen", sites = 6, samples = 999)
+
+Within_Zone_Dissimilarities <- cbind(c(alpresamp$mean.values[1], alpresamp$sd.values[1],
+           alpresamp$mean.values[2], alpresamp$sd.values[2],
+           alpresamp$mean.values[3], alpresamp$sd.values[3]),
+           c(borealresamp$mean.values[1], borealresamp$sd.values[1],
+           borealresamp$mean.values[2], borealresamp$sd.values[2],
+           borealresamp$mean.values[3], borealresamp$sd.values[3]),
+           c(subalpinesamp$mean.values[1], subalpinesamp$sd.values[1],
+           subalpinesamp$mean.values[2], subalpinesamp$sd.values[2],
+           subalpinesamp$mean.values[3], subalpinesamp$sd.values[3]))
+           
+Within_Zone_Dissimilarities_PA <-cbind(
+          c(alpPAresamp$mean.values[1], alpPAresamp$sd.values[1],
+           alpPAresamp$mean.values[2], alpPAresamp$sd.values[2],
+           alpPAresamp$mean.values[3], alpPAresamp$sd.values[3]),
+          c(borealPAresamp$mean.values[1], borealPAresamp$sd.values[1],
+           borealPAresamp$mean.values[2], borealPAresamp$sd.values[2],
+           borealPAresamp$mean.values[3], borealPAresamp$sd.values[3]),
+           c(subalpPAresamp$mean.values[1], subalpPAresamp$sd.values[1],
+           subalpPAresamp$mean.values[2], subalpPAresamp$sd.values[2],
+           subalpPAresamp$mean.values[3], subalpPAresamp$sd.values[3]))
+           
+
+Within_Zone_Dissimilarities <- as.data.frame(Within_Zone_Dissimilarities)
+Within_Zone_Dissimilarities_PA <- as.data.frame(Within_Zone_Dissimilarities_PA)
+
+names(Within_Zone_Dissimilarities) <- c("Alpine","Boreal","Subalpine")
+names(Within_Zone_Dissimilarities_PA) <- c("Alpine","Boreal","Subalpine")
+
+
+Within_Zone_Dissimilarities <- as.data.frame(t(Within_Zone_Dissimilarities))
+Within_Zone_Dissimilarities_PA <- as.data.frame(t(Within_Zone_Dissimilarities_PA))
+
+names(Within_Zone_Dissimilarities) <- c("Balance", "SD","Gradient", "SD", "Bray", "SD")
+
+names(Within_Zone_Dissimilarities_PA) <- c("Turnover", "SD","Nestedness", "SD", "Sorensen", "SD")
+
+
+Within_Zone_Dissimilarities
+
+alpBetaAbund <- beta.multi.abund(alpine)
+subalpineBetaAbund <- beta.multi.abund(subalpine)
+borealBetaAbund<- beta.multi.abund(boreal)
+
+plot(density(borealresamp$sampled.values$beta.BRAY.BAL), col="green", xlim=c(0,1), ylim=c(0,100), main = "Abundance Weighed Dissimilarity (beta.Bal)")
+lines(density(alpresamp$sampled.values$beta.BRAY.BAL), col="blue")
+lines(density(subalpinesamp$sampled.values$beta.BRAY.BAL), col="red")
+```
+
+```{r Pairwise Zone Dissimilarities (PA and Abund based)}
+zones <- allObs %>%
+  group_by(allObs$zone) %>% 
+  summarise_at(names(passerines), sum, na.rm = FALSE)
+
+
+names(zones)[names(zones) == "allObs$zone"] <- "zone"
+zones <- column_to_rownames(zones, "zone")
+
+paCore <- decostand(zones, method = "pa")
+
+core <- betapart.core.abund(zones)
+
+paCore <- betapart.core(paCore)
+
+betaZones <-  beta.sample.abund(zones, index.family = "bray", sites = 2, samples = 999)
+
+paBetaZones <-  beta.sample(paCore, index.family = "sor", sites = 2, samples = 999)
+
+betas <- c(betaZones, paBetaZones)
+
+pairBeta  <- beta.pair.abund(core)
+paBeta <- beta.pair(paCore)
+
+
+pairBeta <- c(pairBeta, paBeta)
+pairBeta
+
+cbind(c(pairBeta$mean.values[1], alpresamp$sd.values[1],
+           alpresamp$mean.values[2], alpresamp$sd.values[2],
+           alpresamp$mean.values[3], alpresamp$sd.values[3]),
+           c(borealresamp$mean.values[1], borealresamp$sd.values[1],
+           borealresamp$mean.values[2], borealresamp$sd.values[2],
+           borealresamp$mean.values[3], borealresamp$sd.values[3]),
+           c(subalpinesamp$mean.values[1], subalpinesamp$sd.values[1],
+           subalpinesamp$mean.values[2], subalpinesamp$sd.values[2],
+           subalpinesamp$mean.values[3], subalpinesamp$sd.values[3]))
+
+```
+
+```{r Within Alpine Dissimilarities}
+
+pa <- decostand(szObs[names(passerines)], method = "pa")
+
+pa$zone <- scaledEnv$zone
+
+alpine <- subset(pa, zone == 'ALP')  
+
+
+alpine$zone <- NULL
+
+
+
+betaCorealpine <- betapart.core.abund(alpine)
+
+
+betaCoresubalpine <- betapart.coreabund(subalpine)
+
+
+#within zone variability (pairwise analysis within zone)
+#how distinct is a site's zone when compared to alls of the same cata?
+beta.pairAlpine <- beta.pair(betaCorealpine)
+
+
+#Zone specific variability (aggregate dissimilarity within the zone)
+#how dissimilar is zone?
+betaAlpine <- beta.multi(betaCorealpine)
+
+print(betaAlpine)
+print(beta.pairAlpine)
+
+
+
+
+```
+
+```{r Within Boreal Dissimilarities}
+pa <- decostand(szObs[names(passerines)], method = "pa")
+
+pa$zone <- scaledEnv$zone
+
+
+boreal <- subset(pa, zone == 'BOR') 
+boreal$zone <- NULL
+
+
+betaCoreboreal <- betapart.core(boreal)
+
+beta.pairBoreal <- beta.pair(betaCoreboreal)
+
+betaBoreal <- beta.multi(betaCoreboreal)
+
+
+
+beta.pairBoreal
+betaBoreal
+```
+
+```{r Within SubAlpine Dissimilarities}
+
+pa <- decostand(szObs[names(passerines)], method = "pa")
+
+pa$zone <- scaledEnv$zone
+
+
+subalpine <- subset(pa, zone == 'SUB') 
+
+subalpine$zone   <- NULL
+beta.pairSubalp <-  beta.pair(betaCoresubalpine)
+  
+betaSubalp <-  beta.multi(betaCoresubalpine)
+
+beta.pairSubalp
+betaSubalp
+
+
+```
+
+```{r Declutter}
+
+rm(betaSubalp)
+rm(betaZones)
+rm(boreal)
+rm(borealBetaAbund)
+rm(borealresamp)
+rm(core)
+rm(paBeta)
+rm(paBetaZones)
+rm(paCore)
+rm(pairBeta)
+rm(subalpine)
+rm(subalpineBetaAbund)
+rm(subalpinesamp)
+rm(zones)
+rm(alpBetaAbund)
+rm(alpine)
+rm(alpresamp)
+rm(beta.pairAlpine)
+rm(beta.pairBoreal)
+rm(beta.pairSubalp)
+rm(betaAlpine)
+rm(betaBoreal)
+rm(betaCorealpine)
+rm(betaCoreboreal)
+rm(betaCoresubalpine)
+rm(betaCoreSites)
+rm(betaSites)
+rm(betas)
+rm(sites)
+
+```
+
+
+
+```{r Declutter}
+
+rm(richGLM)
+rm(richGLMM_site)
+rm(richGLMM_Env)
+rm(nsamp)
+rm(richness)
+rm(site_zone)
+rm(div)
+rm(All_Locations)
+```
+
+######Dissimilarity modeling
+
+```{r}
+library(gdm)
+
+szObs$nsamp <- NULL
+
+szObs <- rownames_to_column(szObs, "site_zone")
+
+disEnv <- ARU_env[names(ARU_env) %in% c("max_ndvi","habEnt","cloud","eviDisp","elev","tri","aspect","Tmax_sm","tpi","tri","Longitude","Latitude","site_zone","PPT_sm")]
+
+hi <- formatsitepair(szObs, bioFormat = 1, dist = "bray", abundance = TRUE, siteColumn = "site_zone", XColumn = "Longitude", YColumn = "Latitude", predData = disEnv)
+
+hi[sapply(hi, is.character)] <- lapply(hi[sapply(hi, is.character)], 
+                                       as.factor)
+
+
+
+dmod <- gdm(hi, geo = TRUE)
+
+dmod
+
+plot.gdm(dmod, include.rug = TRUE, rug.sitepair = hi)
+
+```
+
+```{r}
+
+
+```
+
+
+
+######Indicator Species Analysis
+
+```{r}
+library(betapart)
+library(vegan)
+library(tidyverse)
+library(tidyr)
+library(indicspecies)
+
+
+
+ind <- multipatt(szObs,  func = "IndVal.g", cluster = szEnv$zone, control = how(nperm=100), permutations = 100)
+
+print(summary(ind, indvalcomp=TRUE, alpha = 1))
+
+assoc <- strassoc(szObs, cluster = szEnv$zone, func = "IndVal.g", nboot.ci = (100), alpha = .05)
+
+indicators <- as.data.frame(assoc$stat)
+
+loci <- as.data.frame(assoc$lowerCI)
+names(loci) <- c("ALci","BLci","SLci")
+loci <- rownames_to_column(loci, "Species")
+
+upci <- as.data.frame(assoc$upperCI)
+names(upci) <-c("AUci","BUci","SUci")
+upci <- rownames_to_column(upci, "Species")
+
+indicators <- rownames_to_column(indicators, "Species")
+
+indicators <- left_join(indicators, loci, "Species")
+indicators <- left_join(indicators,upci,"Species")
+
+indicators <- column_to_rownames(indicators,"Species")
+
+indicators <- indicators[,c("ALP","ALci","AUci", "SUB","SLci","SUci","BOR" , "BLci" , "BUci")]
+
+indicators
+
+```
+
+
+
+
+######Normalized Stochasticity Ratios
+
+```{r}
+
+szObs$nsamp <- NULL
+
+szObs <- rownames_to_column(szObs, var = "site_zone")
+
+szObs <- separate(data = szObs,
+                      col=site_zone,
+                      into = c("site","zone"),
+                      sep = "_",
+                      remove = FALSE)
+
+
+
+#szObs$site <- NULL
+
+szObs <- column_to_rownames(szObs, var = "site_zone")
+
+paszObs <- decostand(szObs[3:59], method = "pa")
+paszObs$zone <- szObs$zone
+paszObs$site <- szObs$site
+
+
+NST <- tNST(comm=paszObs[1:57], 
+            group = szObs[58],
+            dist.method = "bray", 
+            abundance.weighted=TRUE,
+            rand = 1000, 
+            output.rand = TRUE, 
+            SES = TRUE,
+            between.group = TRUE)
+
+          
+NST$index.grp
+NST$index.between
+
+boot <- nst.boot(NST, rand = 1000, between.group = TRUE)
+
+
+boot
+```
+
+```{r}
+
+
+locObs$nsamp <- NULL
+
+locObs <- separate(data = locObs,
+                      col=location,
+                      into = c("site","zone"),
+                      sep = "_",
+                      remove = FALSE)
+
+locObs <- separate(data = locObs,
+                      col=zone,
+                      into = c("zone"),
+                      sep = 1,
+                      remove = TRUE)
+
+
+locObs$site <- NULL
+
+locObs <- column_to_rownames(locObs, "location")
+
+
+NST <- tNST(comm=locObs[2:50], 
+            group = locObs[1],
+            dist.method = "bray", 
+            abundance.weighted=FALSE,
+            rand = 1000, 
+            output.rand = TRUE)
+          
+
+NST
+
+boot <- nst.boot(NST, rand = 1000, between.group = TRUE)
+
+
+boot
+```
+
